@@ -48,6 +48,7 @@ Everything else in the chain is already native to Termux: Gradle, OpenJDK, `aapt
 ./setup.sh                        # install to ~/android-sdk (default)
 ./setup.sh --sdk-dir ~/sdk        # custom install location
 ./setup.sh --platforms "34 35"    # also fetch extra SDK platforms
+./setup.sh --native-tools         # also install clang/cmake/ninja/ndk-sysroot
 ./setup.sh --skip-packages        # assume Termux packages are already installed
 ./setup.sh -y                     # non-interactive
 ./setup.sh --help                 # full option list
@@ -194,32 +195,80 @@ with `sha256sum` after downloading. The pinned hashes in this script are for `aa
 
 ---
 
-## NDK / native C++ (not verified)
+## NDK / native C++
 
 Only needed for CPU-bound code or wrapping existing C/C++ libraries — games, codecs,
 ML inference, OpenCV/SQLite, cross-platform engines. Most apps never need it.
 
-**Same trap as build-tools:** Google's NDK ships **x86_64 host** toolchains by default,
-which will not run on aarch64 Termux. Check before trusting any NDK:
+### The right way: Termux's native toolchain (~200 MB)
+
+**Termux's own `clang` is built from the NDK and already targets Android.** No full NDK
+download is needed for most native work:
 
 ```bash
-ls "$NDK/toolchains/llvm/prebuilt/"   # must contain linux-arm64
+./setup.sh --native-tools
 ```
 
-An NDK whose prebuilt directory contains `linux-arm64` is usable. Otherwise, install via
-`sdkmanager "ndk;<version>"`, check the host arch, and discard it if only `linux-x86_64`
-is present.
+Installs `clang`, `cmake`, `ninja`, `ndk-sysroot`, `lld`, then proves it works by
+compiling a probe `.so`. Verified on-device — `clang --version` reports
+`Target: aarch64-unknown-linux-android24`, and this produces a real Android library:
 
-Wire a project up only if it has native sources:
+```bash
+clang++ --target=aarch64-linux-android21 -std=c++17 -shared -fPIC -o libfoo.so foo.cpp
+# -> ELF 64-bit LSB shared object, ARM aarch64
+```
+
+- `clang` / `lld` — compiler and linker (`--target=aarch64-linux-android<api>`)
+- `ndk-sysroot` — Android headers and libs in `$PREFIX/include` and `$PREFIX/lib`
+- `cmake` + `ninja` — build system and generator
+
+CMake + ninja drive a normal CMake project against this toolchain.
+
+### Why there is no `--with-ndk` option
+
+Google publishes **no aarch64-host NDK**, and the community ports **do not work in
+Termux**. This was tested to completion, not assumed:
+
+- The `SnowNF/ndk-aarch64-linux` port (`android-ndk-r29-linux-aarch64.tar.gz`, 1.9 GB,
+  extracts to 5.8 GB) contains binaries that **are** aarch64 (`ELF ... ARM aarch64`) but
+  are linked against **glibc**:
+  `interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 3.7.0`.
+- Android/Termux use **bionic** (`/system/bin/linker64`), not glibc. Running them fails
+  with `cannot execute: required file not found`.
+- Its host directory is even named `linux-x86_64` (only the binary arch was patched).
+
+So a "full NDK" is not reachable this way on Termux. Use the Termux toolchain above.
+
+### If you truly need the full NDK
+
+It is only genuinely required for the NDK's own build scripts (`ndk-build`), its
+platform-versioned sysroots, or bundled `simpleperf`. Options, in order of preference:
+
+1. **Do the native compile on a desktop/CI** and ship the resulting `.so` files into
+   `app/src/main/jniLibs/<abi>/`. This is the normal path for release builds anyway.
+2. Run a glibc environment (Termux `glibc-repo` + `glibc-runner`) and execute the port
+   under it — adds a moving part and is not verified here.
+
+### Wiring a project up
+
+Only if the project actually has native sources:
 
 ```kotlin
 android {
-    ndkVersion = "<version>"
-    externalNativeBuild {
-        cmake { path = file("src/main/cpp/CMakeLists.txt") }
-    }
+    defaultConfig { externalNativeBuild { cmake { cppFlags += "-std=c++17" } } }
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
 }
 ```
+
+Expect one `.so` per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`), which inflates APK size.
+
+### Do not use
+
+- `sdkmanager "ndk;<version>"` — delivers an **x86_64 host** toolchain that cannot execute
+  on aarch64 Android.
+- **ACS / AndroidIDE packages** — its data directory is unreadable while the app is not
+  running, its SSH server may be down, and its `.deb`s are built for its own prefix: an
+  extracted ACS binary fails with `library "libandroid-spawn.so" not found`.
 
 ---
 

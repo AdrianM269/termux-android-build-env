@@ -13,6 +13,7 @@
 #   ./setup.sh                      # install to ~/android-sdk
 #   ./setup.sh --sdk-dir ~/sdk      # custom location
 #   ./setup.sh --platforms "34 35"  # extra platforms to fetch via sdkmanager
+#   ./setup.sh --native-tools       # also install clang/cmake/ninja/ndk-sysroot
 #   ./setup.sh --skip-packages      # assume Termux packages already installed
 #   ./setup.sh -y                   # non-interactive (no prompt)
 #
@@ -30,6 +31,14 @@ BASE_URL="https://github.com/AndroidIDEOfficial/androidide-tools/releases/downlo
 # Termux packages required to build. openjdk-21 + gradle are the build engine;
 # aapt2/apksigner are useful native fallbacks; the rest are download/extract tools.
 TERMUX_PACKAGES="openjdk-21 gradle aapt2 apksigner git wget curl xz-utils unzip tar coreutils"
+
+# Optional native C/C++ toolchain, installed from the Termux repos.
+# Termux's clang is built from the NDK and already targets Android, so this is a
+# complete, small (~200 MB) way to compile native code — no full NDK needed.
+#   clang  -> compiles with --target=aarch64-linux-android<api>
+#   ndk-sysroot -> Android headers + libs in $PREFIX/include + $PREFIX/lib
+#   cmake/ninja/lld -> build system, generator, linker
+NATIVE_PACKAGES="clang cmake ninja ndk-sysroot lld"
 
 # Archives: "filename|url|sha256|check_path"
 #   check_path is relative to SDK_DIR; if it exists the archive is already
@@ -67,10 +76,12 @@ SDK_DIR="$SDK_DIR_DEFAULT"
 CACHE_DIR="$CACHE_DIR_DEFAULT"
 PLATFORMS="$PLATFORMS_DEFAULT"
 DO_PACKAGES=1
+DO_NATIVE=0
 ASSUME_YES=0
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^#\{1,2\} \{0,1\}//'
+  # Print the leading comment block (after the shebang) as the help text.
+  awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^#+ ?/,""); print }' "$0"
   exit 0
 }
 
@@ -79,6 +90,7 @@ while [ $# -gt 0 ]; do
     --sdk-dir)       SDK_DIR="${2:?--sdk-dir needs a path}"; shift 2 ;;
     --cache-dir)     CACHE_DIR="${2:?--cache-dir needs a path}"; shift 2 ;;
     --platforms)     PLATFORMS="${2-}"; shift 2 ;;
+    --native-tools)  DO_NATIVE=1; shift ;;
     --skip-packages) DO_PACKAGES=0; shift ;;
     -y|--yes)        ASSUME_YES=1; shift ;;
     -h|--help)       usage ;;
@@ -134,6 +146,15 @@ if [ "$DO_PACKAGES" -eq 1 ]; then
   ok "packages installed"
 else
   skip "Termux packages (--skip-packages)"
+fi
+
+if [ "$DO_NATIVE" -eq 1 ] && [ "$DO_PACKAGES" -eq 1 ]; then
+  info "Installing native C/C++ toolchain (Termux)"
+  # shellcheck disable=SC2086
+  "$PKG" install -y $NATIVE_PACKAGES || die "native toolchain install failed"
+  ok "native toolchain installed"
+elif [ "$DO_NATIVE" -eq 1 ]; then
+  skip "native toolchain packages (--skip-packages)"
 fi
 
 for c in curl xz tar sha256sum; do
@@ -328,6 +349,29 @@ printf '%s  ok%s %-12s %s\n' "$C_GRN" "$C_RST" gradle \
 
 printf '    %splatforms:%s %s\n' "$C_DIM" "$C_RST" "$(ls "$SDK_DIR/platforms" 2>/dev/null | tr '\n' ' ')"
 printf '    %sbuild-tools:%s %s\n' "$C_DIM" "$C_RST" "$(ls "$SDK_DIR/build-tools" 2>/dev/null | tr '\n' ' ')"
+
+# Native toolchain: prove clang can actually emit an Android aarch64 .so.
+if [ "$DO_NATIVE" -eq 1 ]; then
+  info "Verifying native C/C++ toolchain"
+  if have clang && have cmake && have ninja; then
+    TMPC="$(mktemp -d "${CACHE_DIR}/nativetest.XXXXXX")"
+    printf 'extern "C" int _probe(int a){return a+1;}\n' > "$TMPC/p.cpp"
+    if clang++ --target=aarch64-linux-android21 -std=c++17 -shared -fPIC \
+         -o "$TMPC/libprobe.so" "$TMPC/p.cpp" 2>/dev/null; then
+      desc="$(file -b "$TMPC/libprobe.so" 2>/dev/null | cut -c1-60)"
+      ok "$(printf '%-12s %s' clang++ "$desc")"
+    else
+      printf '%s  !!%s %-12s compile failed\n' "$C_RED" "$C_RST" clang++
+      FAILED=1
+    fi
+    rm -rf "$TMPC"
+    printf '%s  ok%s %-12s %s\n' "$C_GRN" "$C_RST" cmake "$(cmake --version | head -1)"
+    printf '%s  ok%s %-12s %s\n' "$C_GRN" "$C_RST" ninja "$(ninja --version)"
+  else
+    warn "native toolchain incomplete (need clang, cmake, ninja)"
+    FAILED=1
+  fi
+fi
 
 # ───────────────────────────────── summary ────────────────────────────────────
 
