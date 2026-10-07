@@ -54,6 +54,12 @@ Everything else in the chain is already native to Termux: Gradle, OpenJDK, `aapt
 ./setup.sh --help                 # full option list
 ```
 
+Then, for native code:
+
+```bash
+./build-native-lib.sh app/src/main/cpp/native-lib.cpp   # -> jniLibs/, STL bundled
+```
+
 The script is **idempotent** — run it as many times as you like. It skips archives that
 are already downloaded (after verifying their checksum) and already extracted.
 
@@ -171,9 +177,11 @@ Tested on aarch64 Android 16 (Samsung SM-A366B) inside Termux:
 - Re-run — idempotent, skips downloads and extraction, no duplicate shell config
 - **Real build**: `gradle assembleDebug` → `BUILD SUCCESSFUL`, signed APK produced
 - APK installed on-device and launched without crashes
+- **Native C/C++**: `build-native-lib.sh` compiles a JNI library, and Gradle packages it —
+  the APK contains `lib/arm64-v8a/libnative-lib.so` and `libc++_shared.so`
 
-> The `build` path is verified. The **NDK / native C++** path is **not** verified —
-> see below.
+**Not verified:** Gradle-driven `externalNativeBuild` (needs an AGP-accepted NDK), and
+ABIs other than `arm64-v8a`.
 
 ---
 
@@ -224,7 +232,67 @@ clang++ --target=aarch64-linux-android21 -std=c++17 -shared -fPIC -o libfoo.so f
 
 CMake + ninja drive a normal CMake project against this toolchain.
 
-### Why there is no `--with-ndk` option
+### Native C/C++ libraries (JNI)
+
+You can build and ship native libraries without any NDK. Termux's `clang` is built from
+the NDK and already targets Android, so it produces real JNI `.so` files.
+
+#### Use the helper
+
+```bash
+./build-native-lib.sh app/src/main/cpp/native-lib.cpp
+gradle assembleDebug
+```
+
+It compiles to `app/src/main/jniLibs/<abi>/`, and automatically copies
+`libc++_shared.so` next to the library when the STL is used. Gradle then packages
+everything into the APK — verified, the APK contains:
+
+```
+lib/arm64-v8a/libnative-lib.so
+lib/arm64-v8a/libc++_shared.so
+```
+
+Options: `--name`, `--api`, `--abi`, `--out`, `--std`, `--no-stl`, `--help`.
+
+#### Or do it by hand
+
+```bash
+clang++ --target=aarch64-linux-android24 -std=c++17 -shared -fPIC \
+  -o app/src/main/jniLibs/arm64-v8a/libfoo.so src/main/cpp/foo.cpp
+cp $PREFIX/lib/libc++_shared.so app/src/main/jniLibs/arm64-v8a/
+gradle assembleDebug
+```
+
+#### Two things that will bite you
+
+**Only `arm64-v8a` works.** Termux's clang ships compiler builtins, `libunwind` and
+`libc++_shared.so` for **aarch64-android only**. Other ABIs fail:
+
+```
+ld.lld: error: unable to find library -lc++_shared
+ld.lld: error: cannot open .../libclang_rt.builtins.a: No such file or directory
+```
+
+For `armeabi-v7a` / `x86_64`, build on a desktop NDK and drop the `.so` into the same
+`jniLibs/<abi>/` directory.
+
+**`libc++_shared.so` must travel with your library.** Termux provides no static libc++
+— `-static-libstdc++`, `-static-libc++` and `-Wl,-Bstatic -lc++` all fail (only
+`libc++experimental.a` exists). Every C++ `.so` ends up with
+`NEEDED: libc++_shared.so`, and will fail to load at runtime if you do not copy it
+alongside. C-only sources with `--no-stl` avoid this entirely.
+
+#### Gradle-driven `externalNativeBuild`
+
+Not supported by this setup — it requires an NDK directory that AGP accepts via
+`ndkVersion`, which is deliberately not installed (see below). For a one-off library the
+manual step above is simpler. If you need Gradle to own the CMake invocation, build the
+native code on a desktop/CI and commit the resulting `.so` files into `jniLibs/`.
+
+---
+
+## Why there is no `--with-ndk` option
 
 Google publishes **no aarch64-host NDK**, and no ready-made full NDK works in Termux. This
 was tested to completion, not assumed:
