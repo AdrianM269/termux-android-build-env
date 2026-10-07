@@ -1,0 +1,18 @@
+# Downloads / caches
+.cache/
+*.tar.xz
+*.part
+
+# Local machine config
+local.properties
+
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
