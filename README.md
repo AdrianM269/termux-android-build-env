@@ -226,8 +226,8 @@ CMake + ninja drive a normal CMake project against this toolchain.
 
 ### Why there is no `--with-ndk` option
 
-Google publishes **no aarch64-host NDK**, and the community ports **do not work in
-Termux**. This was tested to completion, not assumed:
+Google publishes **no aarch64-host NDK**, and no ready-made full NDK works in Termux. This
+was tested to completion, not assumed:
 
 - The `SnowNF/ndk-aarch64-linux` port (`android-ndk-r29-linux-aarch64.tar.gz`, 1.9 GB,
   extracts to 5.8 GB) contains binaries that **are** aarch64 (`ELF ... ARM aarch64`) but
@@ -235,9 +235,18 @@ Termux**. This was tested to completion, not assumed:
   `interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 3.7.0`.
 - Android/Termux use **bionic** (`/system/bin/linker64`), not glibc. Running them fails
   with `cannot execute: required file not found`.
-- Its host directory is even named `linux-x86_64` (only the binary arch was patched).
+- The bionic alternative [`HomuHomu833/llvm-custom`](https://github.com/HomuHomu833/llvm-custom)
+  **does run** here (it is statically linked, `Target: aarch64-unknown-linux-android24`) but
+  ships the **compiler only** — no sysroot and no compiler builtins, so it cannot link by
+  itself.
 
-So a "full NDK" is not reachable this way on Termux. Use the Termux toolchain above.
+A full toolchain can be hand-assembled (bionic compiler + NDK sysroot + aarch64
+builtins/`libunwind`), and that was verified to link successfully. **However, its output for
+the same source is equivalent in `DT_NEEDED` and machine type to what Termux's own `clang`
+already produces** — so it adds ~500 MB for no practical gain. Use `--native-tools`.
+
+So a "full NDK" is not worth assembling for ordinary `.so` builds. Use the Termux
+toolchain above.
 
 ### If you truly need the full NDK
 
@@ -246,8 +255,9 @@ platform-versioned sysroots, or bundled `simpleperf`. Options, in order of prefe
 
 1. **Do the native compile on a desktop/CI** and ship the resulting `.so` files into
    `app/src/main/jniLibs/<abi>/`. This is the normal path for release builds anyway.
-2. Run a glibc environment (Termux `glibc-repo` + `glibc-runner`) and execute the port
-   under it — adds a moving part and is not verified here.
+2. Assemble the hybrid toolchain manually — see the project wiki/issue for the recipe.
+3. Run the glibc port under a glibc environment (Termux `glibc-repo` + `glibc-runner`) —
+   adds a moving part and is not verified here.
 
 ### Wiring a project up
 
