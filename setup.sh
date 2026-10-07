@@ -15,6 +15,7 @@
 #   ./setup.sh --platforms "34 35"  # extra platforms to fetch via sdkmanager
 #   ./setup.sh --native-tools       # also install clang/cmake/ninja/ndk-sysroot
 #   ./setup.sh --skip-packages      # assume Termux packages already installed
+#   ./setup.sh --project ~/myapp    # set up local.properties + gradle.properties
 #   ./setup.sh -y                   # non-interactive (no prompt)
 #
 set -euo pipefail
@@ -28,9 +29,11 @@ BUILD_TOOLS_VERSION="34.0.4"
 
 BASE_URL="https://github.com/AndroidIDEOfficial/androidide-tools/releases/download"
 
-# Termux packages required to build. openjdk-21 + gradle are the build engine;
+# Termux packages required to build. openjdk-21 is the JVM that runs Gradle;
 # aapt2/apksigner are useful native fallbacks; the rest are download/extract tools.
-TERMUX_PACKAGES="openjdk-21 gradle aapt2 apksigner git wget curl xz-utils unzip tar coreutils"
+# NOTE: Do NOT install the 'gradle' package — it provides Gradle 9.x which is
+# incompatible with AGP 8.13.1. Projects use their own ./gradlew wrapper instead.
+TERMUX_PACKAGES="openjdk-21 aapt2 apksigner git wget curl xz-utils unzip tar coreutils"
 
 # Optional native C/C++ toolchain, installed from the Termux repos.
 # Termux's clang is built from the NDK and already targets Android, so this is a
@@ -78,6 +81,7 @@ PLATFORMS="$PLATFORMS_DEFAULT"
 DO_PACKAGES=1
 DO_NATIVE=0
 ASSUME_YES=0
+PROJECT_DIR=""
 
 usage() {
   # Print the leading comment block (after the shebang) as the help text.
@@ -92,6 +96,7 @@ while [ $# -gt 0 ]; do
     --platforms)     PLATFORMS="${2-}"; shift 2 ;;
     --native-tools)  DO_NATIVE=1; shift ;;
     --skip-packages) DO_PACKAGES=0; shift ;;
+    --project)       PROJECT_DIR="${2:?--project needs a path}"; shift 2 ;;
     -y|--yes)        ASSUME_YES=1; shift ;;
     -h|--help)       usage ;;
     *) die "unknown option: $1  (try --help)" ;;
@@ -299,6 +304,49 @@ ${BASHRC_BLOCK_END}
 EOF
 ok "env block written to $BASHRC"
 
+# ─────────────────────── step 5b: project setup (optional) ─────────────────────
+
+if [ -n "$PROJECT_DIR" ]; then
+  PROJECT_DIR="${PROJECT_DIR/#\~/$HOME}"
+  info "Setting up project: $PROJECT_DIR"
+
+  if [ ! -d "$PROJECT_DIR" ]; then
+    die "project directory does not exist: $PROJECT_DIR"
+  fi
+
+  # local.properties — point Gradle at our SDK
+  cat > "$PROJECT_DIR/local.properties" <<EOF
+sdk.dir=$SDK_DIR
+EOF
+  ok "local.properties created"
+
+  # gradle.properties — add aapt2 override if not present
+  GRADLE_PROPS="$PROJECT_DIR/gradle.properties"
+  if [ -f "$GRADLE_PROPS" ]; then
+    if ! grep -q "android.aapt2FromMavenOverride" "$GRADLE_PROPS"; then
+      echo "android.aapt2FromMavenOverride=$PREFIX/bin/aapt2" >> "$GRADLE_PROPS"
+      ok "aapt2 override added to gradle.properties"
+    else
+      skip "aapt2 override already present"
+    fi
+  else
+    echo "android.aapt2FromMavenOverride=$PREFIX/bin/aapt2" > "$GRADLE_PROPS"
+    ok "gradle.properties created with aapt2 override"
+  fi
+
+  cat <<EOF
+
+  Project setup complete. Build with:
+    cd $PROJECT_DIR
+    ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx1024m"
+
+  NOTE: For projects with native C++ code (JNI/CMake), the NDK cannot run on
+  ARM64. Pre-build with Termux's clang and place .so files in
+  app/src/main/jniLibs/arm64-v8a/, then comment out externalNativeBuild in
+  app/build.gradle. See the wiki pitfalls for details.
+EOF
+fi
+
 # ─────────────────────────────── step 6: verify ───────────────────────────────
 
 info "Verifying installation"
@@ -387,14 +435,17 @@ cat <<EOF
   Cache:  $CACHE_DIR   ($(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1) of archives, safe to delete)
 
   Open a new shell, or run:  source ~/.bashrc
-  Then build an app with:    gradle assembleDebug
+  Then build an app with:    ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx1024m"
 
   Next steps for a project:
-    1. local.properties  ->  sdk.dir=$SDK_DIR
+    1. Run: ./setup.sh --project ~/myapp
+       (creates local.properties + gradle.properties with aapt2 override)
     2. settings.gradle.kts must declare google() in pluginManagement:
          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
        (without this, Gradle cannot find the Android Gradle Plugin)
     3. Keep the project in app-internal storage (~/...), never /sdcard (noexec).
+    4. For projects with JNI/CMake: pre-build with Termux clang, place .so in
+       app/src/main/jniLibs/arm64-v8a/, comment out externalNativeBuild.
 
   Verify an APK:  apksigner verify --verbose app/build/outputs/apk/debug/app-debug.apk
 EOF
