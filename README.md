@@ -343,11 +343,7 @@ Expect one `.so` per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`), which inflates 
 ### Do not use
 
 - `sdkmanager "ndk;<version>"` — delivers an **x86_64 host** toolchain that cannot execute
-  on aarch64 Android.
-- **ACS / AndroidIDE packages** — its data directory is unreadable while the app is not
-  running, its SSH server may be down, and its `.deb`s are built for its own prefix: an
-  extracted ACS binary fails with `library "libandroid-spawn.so" not found`.
-
+  on aarch64 Android. 
 ---
 
 ## Troubleshooting
